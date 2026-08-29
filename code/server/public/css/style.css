@@ -1,0 +1,36 @@
+/* public/css/style.css */
+body {
+    font-family: system-ui, sans-serif;
+    background: #13151b;
+    color: #eef1f7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.card {
+    background: #1f222b;
+    padding: 2.5rem 3rem;
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    text-align: center;
+}
+
+h2 {
+    margin: 0 0 1rem;
+}
+
+.ok {
+    color: #7ee3a0;
+}
+
+.err {
+    color: #f28b82;
+}
+
+.muted {
+    color: #9aa3b6;
+    font-size: 0.95rem;
+}
