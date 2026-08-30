@@ -6,6 +6,7 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/auth");
+const emailRoutes = require("./routes/emails");
 
 const app = express();
 
@@ -19,6 +20,8 @@ app.set("views", path.join(__dirname, "views"));
 // --- Middleware ---
 app.use(express.json());
 app.use(cookieParser());
+
+// --- Session (in-memory for now) ---
 app.use(
     session({
         secret: process.env.SESSION_SECRET,
@@ -33,6 +36,7 @@ app.use(express.static(path.join(__dirname, "public")));
 
 // --- Routes ---
 app.use("/auth", authRoutes);
+app.use("/emails", emailRoutes);
 
 // --- Home / health route ---
 app.get("/", (req, res) => {
