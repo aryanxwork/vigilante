@@ -50,5 +50,12 @@ router.get("/fetch", requireAuth, async (req, res) => {
         res.render("error", { message: err.message });
     }
 });
+const { runCycle } = require("../jobs/classifier");
+
+// GET /emails/run-cycle — manually trigger one background cycle (for testing)
+router.get("/run-cycle", requireAuth, async (req, res) => {
+    await runCycle();
+    res.send("Cycle run — check the server console for results.");
+});
 
 module.exports = router;
