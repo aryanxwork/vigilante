@@ -69,6 +69,78 @@ async function fetchRecentEmails(user, maxResults = 20) {
 
     return emails;
 }
+// Get the CURRENT historyId of the mailbox (used to seed a new user's checkpoint)
+async function getCurrentHistoryId(user) {
+    const auth = getAuthClient(user);
+    const gmail = google.gmail({ version: "v1", auth });
+    const profile = await gmail.users.getProfile({ userId: "me" });
+    return profile.data.historyId;
+}
 
-module.exports = { getAuthClient, fetchRecentEmails };
+// Fetch NEW messages since a given historyId (the checkpoint)
+async function fetchNewSince(user, startHistoryId) {
+    const auth = getAuthClient(user);
+    const gmail = google.gmail({ version: "v1", auth });
+
+    let newMessageIds = [];
+    let latestHistoryId = startHistoryId;
+    let pageToken = undefined;
+
+    do {
+        const res = await gmail.users.history.list({
+            userId: "me",
+            startHistoryId: startHistoryId,
+            historyTypes: ["messageAdded"], // only care about new mail
+            pageToken,
+        });
+
+        // Track the newest historyId Gmail reports
+        if (res.data.historyId) latestHistoryId = res.data.historyId;
+
+        const history = res.data.history || [];
+        for (const h of history) {
+            const added = h.messagesAdded || [];
+            for (const m of added) {
+                // only inbox messages (skip sent, drafts, etc.)
+                if (m.message.labelIds && m.message.labelIds.includes("INBOX")) {
+                    newMessageIds.push(m.message.id);
+                }
+            }
+        }
+
+        pageToken = res.data.nextPageToken;
+    } while (pageToken);
+
+    // De-duplicate (Gmail can list the same message more than once)
+    newMessageIds = [...new Set(newMessageIds)];
+
+    // Fetch full details for each new message (reuse the same extraction as before)
+    const emails = [];
+    for (const id of newMessageIds) {
+        const detail = await gmail.users.messages.get({
+            userId: "me",
+            id,
+            format: "metadata",
+            metadataHeaders: ["From", "Subject", "List-Unsubscribe"],
+        });
+        const headers = detail.data.payload?.headers || [];
+        const getHeader = (name) =>
+            headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || "";
+
+        emails.push({
+            id: detail.data.id,
+            sender: getHeader("From"),
+            subject: getHeader("Subject"),
+            snippet: detail.data.snippet || "",
+            unsubscribe: getHeader("List-Unsubscribe"),
+            gmail_labels: detail.data.labelIds || [],
+        });
+    }
+
+    return { emails, latestHistoryId };
+}
+
+module.exports = { getAuthClient, fetchRecentEmails, getCurrentHistoryId, fetchNewSince };
+
+
 
