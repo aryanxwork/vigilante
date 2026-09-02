@@ -6,22 +6,16 @@ const { scoreEmails } = require("./scoring");
 
 const ARCHIVE_THRESHOLD = 0.2;
 
-
-// Ensure the "Vigilante/Archived" label exists, return its ID (cached per process)
-let cachedLabelId = null;
+// Ensure the "Vigilante/Archived" label exists in THIS account, return its ID.
+// (No caching — the label ID differs per account, so we look it up fresh each time.)
 async function getArchiveLabelId(gmail) {
-    if (cachedLabelId) return cachedLabelId;
-
     const res = await gmail.users.labels.list({ userId: "me" });
     const existing = (res.data.labels || []).find(
         (l) => l.name === "Vigilante/Archived"
     );
-    if (existing) {
-        cachedLabelId = existing.id;
-        return cachedLabelId;
-    }
+    if (existing) return existing.id;
 
-    // Create it if it doesn't exist
+    // Create it if it doesn't exist in this account
     const created = await gmail.users.labels.create({
         userId: "me",
         requestBody: {
@@ -30,8 +24,7 @@ async function getArchiveLabelId(gmail) {
             messageListVisibility: "show",
         },
     });
-    cachedLabelId = created.data.id;
-    return cachedLabelId;
+    return created.data.id;
 }
 
 // Archive an email: remove from INBOX + tag with Vigilante/Archived (reversible)
