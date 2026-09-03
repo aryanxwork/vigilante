@@ -3,7 +3,7 @@
 
 import requests
 
-URL = "http://localhost:8000/score"
+URL = "https://vigilante-azjt.onrender.com/score"
 
 # (sender, subject, snippet, expected_score)
 # expected values are the known scores from the model's
