@@ -3,6 +3,8 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const { processUser } = require("../utils/processor");
+const { pingScoringService } = require("../utils/scoring");
+// ... inside the handler, before the user loop:
 
 // Reuse the DB connection across warm invocations (serverless best practice)
 let conn = null;
@@ -18,6 +20,7 @@ async function connectDB() {
 exports.handler = async (event) => {
     try {
         await connectDB();
+        await pingScoringService();
 
         const users = await User.find({ connected: true });
         console.log(`[lambda] cycle start — ${users.length} connected user(s)`);
