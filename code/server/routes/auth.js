@@ -66,8 +66,11 @@ router.get("/google/callback", async (req, res) => {
         // Store the user id in the session (they're now "logged in")
         req.session.userId = user._id;
 
-        // redirect to the React dashboard after connecting
-        res.redirect("http://localhost:3000/dashboard");;
+        // Show a success page confirming the connection
+        res.render("success", {
+            email: user.email,
+            hasRefreshToken: !!user.refreshToken,
+        });
     } catch (err) {
         console.error("OAuth callback error:", err.message);
         res.render("error", { message: err.message });
