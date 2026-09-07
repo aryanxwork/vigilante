@@ -3,9 +3,7 @@ const axios = require("axios");
 
 const SCORING_URL = process.env.SCORING_SERVICE_URL || "http://localhost:8000";
 
-// Score a batch of emails. Returns the same emails with a `score` and `decision` added.
 async function scoreEmails(emails) {
-    // Shape each email the way the scoring service expects
     const payload = emails.map((e) => ({
         sender: e.sender,
         subject: e.subject,
@@ -14,24 +12,44 @@ async function scoreEmails(emails) {
         account: "personal",
     }));
 
-    try {
+    // helper: one attempt with a 60s timeout (enough for a cold Render wake-up)
+    async function attempt() {
         const res = await axios.post(`${SCORING_URL}/score-batch`, payload, {
-            timeout: 15000,
+            timeout: 60000, // 60 seconds
         });
+        return res.data.results;
+    }
 
-        const results = res.data.results; // array of { score, decision }
-
-        // Attach each score back to its email (same order as sent)
-        return emails.map((e, i) => ({
-            ...e,
-            score: results[i].score,
-            decision: results[i].decision,
-        }));
+    let results;
+    try {
+        results = await attempt();
     } catch (err) {
-        console.error("Scoring service error:", err.message);
-        // If scoring fails, return emails unscored rather than crashing
-        return emails.map((e) => ({ ...e, score: null, decision: "unknown" }));
+        // First call failed (likely Render cold start). Wait, then retry once — Render is awake now.
+        console.warn("Scoring first attempt failed, retrying:", err.message);
+        await new Promise((r) => setTimeout(r, 3000)); // wait 3s
+        try {
+            results = await attempt();
+        } catch (err2) {
+            console.error("Scoring failed after retry:", err2.message);
+            // give up — return unscored so the loop doesn't crash
+            return emails.map((e) => ({ ...e, score: null, decision: "unknown" }));
+        }
+    }
+
+    return emails.map((e, i) => ({
+        ...e,
+        score: results[i].score,
+        decision: results[i].decision,
+    }));
+}
+
+// ping Render's health endpoint to keep it awake
+async function pingScoringService() {
+    try {
+        await axios.get(`${SCORING_URL}/health`, { timeout: 10000 });
+    } catch (err) {
+        // ignore — this is just a keep-warm ping
     }
 }
 
-module.exports = { scoreEmails };
+module.exports = { scoreEmails, pingScoringService };
