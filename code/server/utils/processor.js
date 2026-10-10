@@ -1,8 +1,9 @@
-// utils/processor.js — processes new mail for one user: fetch → score → archive → checkpoint
+// utils/processor.js — processes new mail for one user: fetch → score → archive → log → checkpoint
 const { google } = require("googleapis");
 const User = require("../models/User");
 const { getAuthClient, getCurrentHistoryId, fetchNewSince } = require("./gmail");
 const { scoreEmails } = require("./scoring");
+const Feedback = require("../models/Feedback");
 
 const ARCHIVE_THRESHOLD = 0.2;
 
@@ -40,6 +41,30 @@ async function archiveEmail(user, messageId) {
             addLabelIds: [labelId],
         },
     });
+}
+
+// Log the model's decision for one email (upsert — never overwrite the original prediction)
+async function logFeedback(user, email, score, action) {
+    try {
+        await Feedback.updateOne(
+            { googleId: user.googleId, messageId: email.id },
+            {
+                $setOnInsert: {
+                    googleId: user.googleId,
+                    messageId: email.id,
+                    threadId: email.threadId || null,
+                    predictedScore: score,
+                    action, // "archived" | "kept"
+                    features: email.features || null,
+                    scoredAt: new Date(),
+                },
+            },
+            { upsert: true }
+        );
+    } catch (err) {
+        // Feedback is best-effort — never let a logging failure break processing
+        console.error(`[${user.email}] feedback log failed for ${email.id}:`, err.message);
+    }
 }
 
 // Process one user's new mail
@@ -84,12 +109,17 @@ async function processUser(user) {
         // --- Score the new emails ---
         const scored = await scoreEmails(emails);
 
-        // --- Archive the clearly-low ones (reversible) ---
+        // --- Archive the clearly-low ones (reversible) + log every decision ---
         let archivedCount = 0;
         for (const e of scored) {
-            if (e.score !== null && e.score < ARCHIVE_THRESHOLD) {
+            if (e.score === null) continue; // scoring failed — don't archive, don't log (no signal to learn from)
+
+            if (e.score < ARCHIVE_THRESHOLD) {
                 await archiveEmail(user, e.id);
                 archivedCount++;
+                await logFeedback(user, e, e.score, "archived");
+            } else {
+                await logFeedback(user, e, e.score, "kept");
             }
         }
 

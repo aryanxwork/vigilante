@@ -30,6 +30,10 @@ exports.handler = async (event) => {
             const r = await processUser(user);
             results.push({ email: user.email, ...r });
         }
+        for (const user of users) {
+            try { await reconcileFeedback(user); }
+            catch (e) { console.error("reconcile failed for", user.email, e.message); }
+        }
 
         console.log("[lambda] cycle complete", JSON.stringify(results));
 
