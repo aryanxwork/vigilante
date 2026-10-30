@@ -5,11 +5,12 @@ const feedbackSchema = new mongoose.Schema(
         googleId: { type: String, required: true, index: true },
         messageId: { type: String, required: true },
         threadId: { type: String },
-        predictedScore: { type: Number, required: true },   // 0..1 from the model at decision time
-        action: { type: String, required: true },   // what WE did: "archived" | "kept"
-        features: { type: Object },                    // feature vector snapshot — the bandit's context
-        label: { type: Number, default: null },     // resolved truth: 1 important, 0 not, null unknown
-        outcome: { type: String, default: "pending" },// human-readable: "unarchived","read","user_archived"...
+        predictedScore: { type: Number, required: true },
+        action: { type: String, required: true },   // "archived" | "kept"
+        explored: { type: Boolean, default: false },   // <-- NEW: true if kept for exploration
+        features: { type: Object },
+        label: { type: Number, default: null },
+        outcome: { type: String, default: "pending" },
         scoredAt: { type: Date, default: Date.now },
         resolvedAt: { type: Date },
     },

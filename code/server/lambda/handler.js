@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const { processUser } = require("../utils/processor");
 const { pingScoringService } = require("../utils/scoring");
+const { reconcileFeedback } = require("../utils/feedback");
 // ... inside the handler, before the user loop:
 
 // Reuse the DB connection across warm invocations (serverless best practice)
