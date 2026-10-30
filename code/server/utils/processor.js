@@ -1,45 +1,36 @@
-// utils/processor.js — fetch → score → (archive | explore | keep) → log → checkpoint
+// utils/processor.js — fetch → score → (archive | explore | keep) → log sender-aware context → checkpoint
 const { google } = require("googleapis");
 const User = require("../models/User");
 const { getAuthClient, getCurrentHistoryId, fetchNewSince } = require("./gmail");
 const { scoreEmails } = require("./scoring");
 const Feedback = require("../models/Feedback");
+const { buildContext } = require("./bandit");
+const { normalizeSender, categoryOf, isBulk, getSenderEngagement } = require("./senderMemory");
 
-// Tunable via Lambda env vars; defaults are safe.
 const ARCHIVE_THRESHOLD = parseFloat(process.env.ARCHIVE_THRESHOLD || "0.2");
-const EXPLORE_MIN = parseFloat(process.env.EXPLORE_MIN || "0.1");  // band floor
-const EXPLORE_RATE = parseFloat(process.env.EXPLORE_RATE || "0.3"); // % of band kept visible
+const EXPLORE_MIN = parseFloat(process.env.EXPLORE_MIN || "0.1");
+const EXPLORE_RATE = parseFloat(process.env.EXPLORE_RATE || "0.3");
 
-// Ensure the "Vigilante/Archived" label exists in THIS account, return its ID.
 async function getArchiveLabelId(gmail) {
     const res = await gmail.users.labels.list({ userId: "me" });
     const existing = (res.data.labels || []).find((l) => l.name === "Vigilante/Archived");
     if (existing) return existing.id;
     const created = await gmail.users.labels.create({
         userId: "me",
-        requestBody: {
-            name: "Vigilante/Archived",
-            labelListVisibility: "labelShow",
-            messageListVisibility: "show",
-        },
+        requestBody: { name: "Vigilante/Archived", labelListVisibility: "labelShow", messageListVisibility: "show" },
     });
     return created.data.id;
 }
 
-// Archive an email: remove from INBOX + tag with Vigilante/Archived (reversible)
 async function archiveEmail(user, messageId) {
     const auth = getAuthClient(user);
     const gmail = google.gmail({ version: "v1", auth });
     const labelId = await getArchiveLabelId(gmail);
-    await gmail.users.messages.modify({
-        userId: "me",
-        id: messageId,
-        requestBody: { removeLabelIds: ["INBOX"], addLabelIds: [labelId] },
-    });
+    await gmail.users.messages.modify({ userId: "me", id: messageId, requestBody: { removeLabelIds: ["INBOX"], addLabelIds: [labelId] } });
 }
 
-// Log the model's decision for one email (upsert — never overwrite the original prediction)
-async function logFeedback(user, email, score, action, explored) {
+// Store the decision + the sender-aware context used to make it.
+async function logFeedback(user, email, score, action, explored, extra) {
     try {
         await Feedback.updateOne(
             { googleId: user.googleId, messageId: email.id },
@@ -49,8 +40,11 @@ async function logFeedback(user, email, score, action, explored) {
                     messageId: email.id,
                     threadId: email.threadId || null,
                     predictedScore: score,
-                    action,                 // "archived" | "kept"
-                    explored: !!explored,   // true only when kept for exploration
+                    action,
+                    explored: !!explored,
+                    sender: extra.sender,
+                    category: extra.category,
+                    context: extra.context,
                     features: email.features || null,
                     scoredAt: new Date(),
                 },
@@ -64,7 +58,6 @@ async function logFeedback(user, email, score, action, explored) {
 
 async function processUser(user) {
     try {
-        // --- First run: seed checkpoint and stop ---
         if (!user.lastHistoryId) {
             const currentId = await getCurrentHistoryId(user);
             user.lastHistoryId = currentId;
@@ -73,7 +66,6 @@ async function processUser(user) {
             return { seeded: true, processed: 0 };
         }
 
-        // --- Fetch what's new since the checkpoint ---
         let result;
         try {
             result = await fetchNewSince(user, user.lastHistoryId);
@@ -89,52 +81,47 @@ async function processUser(user) {
         }
 
         const { emails, latestHistoryId } = result;
-
         if (emails.length === 0) {
-            if (latestHistoryId && latestHistoryId !== user.lastHistoryId) {
-                user.lastHistoryId = latestHistoryId;
-                await user.save();
-            }
+            if (latestHistoryId && latestHistoryId !== user.lastHistoryId) { user.lastHistoryId = latestHistoryId; await user.save(); }
             return { processed: 0 };
         }
 
-        // --- Score ---
         const scored = await scoreEmails(emails);
 
-        // --- Decide per email: keep | explore (keep visible) | archive --- + log every decision
-        let archivedCount = 0;
-        let exploredCount = 0;
-
+        let archivedCount = 0, exploredCount = 0;
         for (const e of scored) {
-            if (e.score === null) continue; // scoring failed — no decision, no log
+            if (e.score === null) continue;
 
-            // 1) Clearly important → keep in inbox
+            // --- build the sender-aware context (also stored for consistent learning) ---
+            const sender = normalizeSender(e.sender);
+            const category = categoryOf(e.gmail_labels);
+            const { rate, seenBefore } = await getSenderEngagement(user.googleId, sender);
+            const context = buildContext(e.score, {
+                senderEngagement: rate,
+                senderSeenBefore: seenBefore,
+                isBulk: isBulk(category, e.unsubscribe),
+            });
+            const extra = { sender, category, context };
+
+            // --- decision is still global-score based (shadow mode); bandit only learns for now ---
             if (e.score >= ARCHIVE_THRESHOLD) {
-                await logFeedback(user, e, e.score, "kept", false);
+                await logFeedback(user, e, e.score, "kept", false, extra);
                 continue;
             }
-
-            // 2) Below threshold but in the borderline band → sometimes EXPLORE (keep visible)
-            const inExploreBand = e.score >= EXPLORE_MIN && e.score < ARCHIVE_THRESHOLD;
-            if (inExploreBand && Math.random() < EXPLORE_RATE) {
-                await logFeedback(user, e, e.score, "kept", true); // kept, flagged explored
+            const inBand = e.score >= EXPLORE_MIN && e.score < ARCHIVE_THRESHOLD;
+            if (inBand && Math.random() < EXPLORE_RATE) {
+                await logFeedback(user, e, e.score, "kept", true, extra);
                 exploredCount++;
                 continue;
             }
-
-            // 3) Everything else below threshold → archive
             await archiveEmail(user, e.id);
             archivedCount++;
-            await logFeedback(user, e, e.score, "archived", false);
+            await logFeedback(user, e, e.score, "archived", false, extra);
         }
 
-        // --- Advance checkpoint ---
         user.lastHistoryId = latestHistoryId;
         await user.save();
-
-        console.log(
-            `[${user.email}] processed ${scored.length} new, archived ${archivedCount}, explored ${exploredCount}`
-        );
+        console.log(`[${user.email}] processed ${scored.length} new, archived ${archivedCount}, explored ${exploredCount}`);
         return { processed: scored.length, archived: archivedCount, explored: exploredCount };
     } catch (err) {
         console.error(`[${user.email}] processing error:`, err.message);
