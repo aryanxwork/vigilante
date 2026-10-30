@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const { processUser } = require("../utils/processor");
 const { pingScoringService } = require("../utils/scoring");
+const { reconcileFeedback } = require("../utils/feedback");
 // ... inside the handler, before the user loop:
 
 // Reuse the DB connection across warm invocations (serverless best practice)
@@ -29,6 +30,10 @@ exports.handler = async (event) => {
         for (const user of users) {
             const r = await processUser(user);
             results.push({ email: user.email, ...r });
+        }
+        for (const user of users) {
+            try { await reconcileFeedback(user); }
+            catch (e) { console.error("reconcile failed for", user.email, e.message); }
         }
 
         console.log("[lambda] cycle complete", JSON.stringify(results));
